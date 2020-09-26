@@ -1,0 +1,2 @@
+python preprocess_data.py --data_path /home/mindspore_deep_cross_network/data/criteo_data
+python train.py --dataset_path data/criteo_data/mindrecord --ckpt_path checkpoint --device_target GPU

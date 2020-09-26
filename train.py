@@ -17,10 +17,12 @@ import os
 import sys
 import argparse
 
-from mindspore import context, ParallelMode
-from mindspore.communication.management import init
+from mindspore import context
+from mindspore.context import ParallelMode
+from mindspore.communication.management import init, get_rank, get_group_size
 from mindspore.train.model import Model
 from mindspore.train.callback import ModelCheckpoint, CheckpointConfig, TimeMonitor
+from mindspore.common import set_seed
 
 from src.deepfm import ModelBuilder, AUCMetric
 from src.config import DataConfig, ModelConfig, TrainConfig
@@ -31,38 +33,64 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 parser = argparse.ArgumentParser(description='CTR Prediction')
 parser.add_argument('--dataset_path', type=str, default=None, help='Dataset path')
 parser.add_argument('--ckpt_path', type=str, default=None, help='Checkpoint path')
-parser.add_argument('--eval_file_name', type=str, default="./auc.log", help='eval file path')
-parser.add_argument('--loss_file_name', type=str, default="./loss.log", help='loss file path')
-parser.add_argument('--do_eval', type=bool, default=True, help='Do evaluation or not.')
-parser.add_argument('--device_target', type=str, default="Ascend", help='choice: Ascend, GPU, CPU, default: Ascend')
-
+parser.add_argument('--eval_file_name', type=str, default="./auc.log",
+                    help='Auc log file path. Default: "./auc.log"')
+parser.add_argument('--loss_file_name', type=str, default="./loss.log",
+                    help='Loss log file path. Default: "./loss.log"')
+parser.add_argument('--do_eval', type=str, default='True',
+                    help='Do evaluation or not, only support "True" or "False". Default: "True"')
+parser.add_argument('--device_target', type=str, default="Ascend", help='Ascend or GPU. Default: Ascend')
 args_opt, _ = parser.parse_known_args()
-device_id = int(os.getenv('DEVICE_ID', 0))
-context.set_context(mode=context.GRAPH_MODE, device_target=args_opt.device_target, device_id=device_id)
+args_opt.do_eval = args_opt.do_eval == 'True'
+rank_size = int(os.environ.get("RANK_SIZE", 1))
 
+set_seed(1)
 
 if __name__ == '__main__':
     data_config = DataConfig()
     model_config = ModelConfig()
     train_config = TrainConfig()
 
-    rank_size = int(os.environ.get("RANK_SIZE", 1))
     if rank_size > 1:
-        context.reset_auto_parallel_context()
-        context.set_auto_parallel_context(parallel_mode=ParallelMode.DATA_PARALLEL, mirror_mean=True)
-        init()
-        rank_id = int(os.environ.get('RANK_ID'))
+        if args_opt.device_target == "Ascend":
+            device_id = int(os.getenv('DEVICE_ID'))
+            context.set_context(mode=context.GRAPH_MODE, device_target=args_opt.device_target, device_id=device_id)
+            context.reset_auto_parallel_context()
+            context.set_auto_parallel_context(parallel_mode=ParallelMode.DATA_PARALLEL, gradients_mean=True)
+            init()
+            rank_id = int(os.environ.get('RANK_ID'))
+        elif args_opt.device_target == "GPU":
+            init()
+            context.set_context(mode=context.GRAPH_MODE, device_target=args_opt.device_target)
+            context.reset_auto_parallel_context()
+            context.set_auto_parallel_context(device_num=get_group_size(),
+                                              parallel_mode=ParallelMode.DATA_PARALLEL,
+                                              gradients_mean=True)
+            rank_id = get_rank()
+        else:
+            print("Unsupported device_target ", args_opt.device_target)
+            exit()
     else:
+        if args_opt.device_target == "Ascend":
+            device_id = int(os.getenv('DEVICE_ID'))
+            context.set_context(mode=context.GRAPH_MODE, device_target=args_opt.device_target, device_id=device_id)
+        elif args_opt.device_target == "GPU":
+            context.set_context(mode=context.GRAPH_MODE, device_target=args_opt.device_target)
+        else:
+            print("Unsupported device_target ", args_opt.device_target)
+            exit()
         rank_size = None
         rank_id = None
 
     ds_train = create_dataset(args_opt.dataset_path,
                               train_mode=True,
-                              epochs=train_config.train_epochs,
+                              epochs=1,
                               batch_size=train_config.batch_size,
                               data_type=DataType(data_config.data_format),
                               rank_size=rank_size,
                               rank_id=rank_id)
+
+    steps_size = ds_train.get_dataset_size()
 
     model_builder = ModelBuilder(ModelConfig, TrainConfig)
     train_net, eval_net = model_builder.get_train_eval_net()
@@ -74,8 +102,15 @@ if __name__ == '__main__':
     callback_list = [time_callback, loss_callback]
 
     if train_config.save_checkpoint:
-        config_ck = CheckpointConfig(save_checkpoint_steps=train_config.save_checkpoint_steps,
-                                     keep_checkpoint_max=train_config.keep_checkpoint_max)
+        if rank_size:
+            train_config.ckpt_file_name_prefix = train_config.ckpt_file_name_prefix + str(get_rank())
+            args_opt.ckpt_path = os.path.join(args_opt.ckpt_path, 'ckpt_' + str(get_rank()) + '/')
+        if args_opt.device_target == "GPU":
+            config_ck = CheckpointConfig(save_checkpoint_steps=steps_size,
+                                         keep_checkpoint_max=train_config.keep_checkpoint_max)
+        else:
+            config_ck = CheckpointConfig(save_checkpoint_steps=train_config.save_checkpoint_steps,
+                                         keep_checkpoint_max=train_config.keep_checkpoint_max)
         ckpt_cb = ModelCheckpoint(prefix=train_config.ckpt_file_name_prefix,
                                   directory=args_opt.ckpt_path,
                                   config=config_ck)
@@ -83,7 +118,7 @@ if __name__ == '__main__':
 
     if args_opt.do_eval:
         ds_eval = create_dataset(args_opt.dataset_path, train_mode=False,
-                                 epochs=train_config.train_epochs,
+                                 epochs=1,
                                  batch_size=train_config.batch_size,
                                  data_type=DataType(data_config.data_format))
         eval_callback = EvalCallBack(model, ds_eval, auc_metric,

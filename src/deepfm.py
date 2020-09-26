@@ -147,6 +147,7 @@ class DenseLayer(nn.Cell):
         return act_func
 
     def construct(self, x):
+        """Dense Layer for Deep Layer of DeepFM Model."""
         x = self.act_func(x)
         if self.training:
             x = self.dropout(x)
@@ -281,11 +282,12 @@ class TrainStepWrap(nn.Cell):
     def __init__(self, network, lr=5e-8, eps=1e-8, loss_scale=1000.0):
         super(TrainStepWrap, self).__init__(auto_prefix=False)
         self.network = network
+        self.network.set_grad()
         self.network.set_train()
         self.weights = ParameterTuple(network.trainable_params())
         self.optimizer = Adam(self.weights, learning_rate=lr, eps=eps, loss_scale=loss_scale)
         self.hyper_map = C.HyperMap()
-        self.grad = C.GradOperation('grad', get_by_list=True, sens_param=True)
+        self.grad = C.GradOperation(get_by_list=True, sens_param=True)
         self.sens = loss_scale
 
     def construct(self, batch_ids, batch_wts, label):

@@ -14,14 +14,14 @@
 # limitations under the License.
 # ============================================================================
 echo "Please run the script as: "
-echo "sh scripts/run_distribute_train.sh DEVICE_NUM DATASET_PATH MINDSPORE_HCCL_CONFIG_PAHT"
+echo "sh scripts/run_distribute_train.sh DEVICE_NUM DATASET_PATH RANK_TABLE_FILE"
 echo "for example: sh scripts/run_distribute_train.sh 8 /dataset_path /rank_table_8p.json"
 echo "After running the script, the network runs in the background, The log will be generated in logx/output.log"
 
 
 export RANK_SIZE=$1
 DATA_URL=$2
-export MINDSPORE_HCCL_CONFIG_PATH=$3
+export RANK_TABLE_FILE=$3
 
 for ((i=0; i<RANK_SIZE;i++))
 do
@@ -36,7 +36,7 @@ do
     env > env.log
     python -u train.py \
     --dataset_path=$DATA_URL \
-    --ckpt_path="checkpoint" \
+    --ckpt_path="./" \
     --eval_file_name='auc.log' \
     --loss_file_name='loss.log' \
     --do_eval=True > output.log 2>&1 &
