@@ -248,27 +248,28 @@ def random_split_trans2mindrecord(input_file_path, output_file_path, criteo_stat
     np.save(os.path.join(output_file_path, "items_error_size_lineCount.npy"), items_error_size_lineCount)
 
 
+def main(data_path, data_file="train_medium.txt"):
+    criteo_stats = CriteoStatsDict()
+    data_file_path = os.path.join(data_path, "origin_data", data_file)
+    stats_output_path = os.path.join(data_path, "stats_dict")
+    mkdir_path(stats_output_path)
+    statsdata(data_file_path, stats_output_path, criteo_stats)
+
+    criteo_stats.load_dict(dict_path=stats_output_path, prefix="")
+    criteo_stats.get_cat2id(threshold=10)
+    in_file_path = os.path.join(data_path, "origin_data", data_file)
+    output_path = os.path.join(data_path, "mindrecord")
+    mkdir_path(output_path)
+    random_split_trans2mindrecord(in_file_path, output_path, criteo_stats, part_rows=2000000, line_per_sample=1000,
+                                  test_size=0.1, seed=2020)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="criteo data")
     parser.add_argument("--data_path", type=str, default="./criteo_data/")
 
     args, _ = parser.parse_known_args()
     data_path = args.data_path
+    main(data_path)
+    
 
-    download_data_path = data_path + "origin_data/"
-    mkdir_path(download_data_path)
-
-    criteo_stats = CriteoStatsDict()
-    data_file_path = data_path + "origin_data/train_medium.txt"
-    stats_output_path = data_path + "stats_dict/"
-    mkdir_path(stats_output_path)
-    statsdata(data_file_path, stats_output_path, criteo_stats)
-
-    criteo_stats.load_dict(dict_path=stats_output_path, prefix="")
-    criteo_stats.get_cat2id(threshold=10)
-
-    in_file_path = data_path + "origin_data/train_medium.txt"
-    output_path = data_path + "mindrecord/"
-    mkdir_path(output_path)
-    random_split_trans2mindrecord(in_file_path, output_path, criteo_stats, part_rows=2000000, line_per_sample=1000,
-                                  test_size=0.1, seed=2020)
+    
