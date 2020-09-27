@@ -113,13 +113,26 @@ def init_var_dict(init_args, values):
 class CrossLayer(nn.Cell):
     def __init__(self, input_dim, weight_bias_init):
         super(CrossLayer, self).__init__()
+        self.input_dim = input_dim
         weight_init, bias_init = weight_bias_init
         self.weight = init_method(weight_init, [input_dim, 1], name="weight")
         self.bias = init_method(bias_init, [input_dim, 1], name="bias")
+        self.ExpandDims = P.ExpandDims()
+        self.Tile = P.Tile()
+        self.Transpose = P.TransPose()
+        self.Mul = P.Mul()
+        self.ReduceSum = P.ReduceSum(keep_dims=False)
 
     def construct(self, x0, x):
-        
-        
+        x0 = self.ExpandDims(x0, 2)
+        x = self.ExpandDims(x, 2)
+        x0_broad_horizon = self.Tile(x0, [1, 1, self.input_dim])
+        x_broad_vertical = self.Transpose(self.Tile(x, [1, 1, self.input_dim]), [0, 2, 1])
+        w_broad_horizon = self.Tile(self.weight, [1, self.input_dim])
+        mid_res = self.Mul(self.Mul(x0_broad_horizon, x_broad_vertical), w_broad_horizon)
+        res = self.ReduceSum(mid_res, axis=2)
+        res = res + self.Transpose(b)
+        return res        
         
 
 class DenseLayer(nn.Cell):
@@ -218,6 +231,9 @@ class DeepFMModel(nn.Cell):
                                         self.weight_bias_init, self.deep_layer_act, self.keep_prob)
         self.dense_layer_4 = DenseLayer(self.all_dim_list[3], self.all_dim_list[4],
                                         self.weight_bias_init, self.deep_layer_act, self.keep_prob)
+        # Cross Layer 
+        self.cross_layer_1 = CrossLayer(self.field_size * self.emb_dim, self.weight_bias_init)
+        self.cross_layer_2 = CrossLayer(self.field_size * self.emb_dim, self.weight_bias_init)
         # FM, linear Layers
         self.Gatherv2 = P.GatherV2()
         self.Mul = P.Mul()
@@ -228,6 +244,7 @@ class DeepFMModel(nn.Cell):
         self.Tile = P.Tile()
         self.Concat = P.Concat(axis=1)
         self.Cast = P.Cast()
+        
 
     def construct(self, id_hldr, wt_hldr):
         """
@@ -238,31 +255,22 @@ class DeepFMModel(nn.Cell):
 
         mask = self.Reshape(wt_hldr, (self.batch_size, self.field_size, 1))
         # Cross Layer
-
-        # Linear layer
-        fm_id_weight = self.Gatherv2(self.fm_w, id_hldr, 0)
-        wx = self.Mul(fm_id_weight, mask)
-        linear_out = self.ReduceSum(wx, 1)
-        # FM layer
         fm_id_embs = self.Gatherv2(self.embedding_table, id_hldr, 0)
         vx = self.Mul(fm_id_embs, mask)
-        v1 = self.ReduceSum(vx, 1)
-        v1 = self.Square(v1)
-        v2 = self.Square(vx)
-        v2 = self.ReduceSum(v2, 1)
-        fm_out = 0.5 * self.ReduceSum(v1 - v2, 1)
-        fm_out = self.Reshape(fm_out, (-1, 1))
+        x0 = self.Reshape(vx, (-1, self.field_size * self.emb_dim))
+        cross_1 = self.cross_layer_1(x0, x0) + x0
+        cross_2 = self.cross_layer_2(x0, cross_1) + cross_1
+
         #  Deep layer
         b = self.Reshape(self.fm_b, (1, 1))
         b = self.Tile(b, (self.batch_size, 1))
-        deep_in = self.Reshape(vx, (-1, self.field_size * self.emb_dim))
-        deep_in = self.Concat((deep_in, b))
+        deep_in = self.Concat((x0, b))
         deep_in = self.dense_layer_1(deep_in)
         deep_in = self.dense_layer_2(deep_in)
         deep_in = self.dense_layer_3(deep_in)
         deep_out = self.dense_layer_4(deep_in)
-        out = linear_out + fm_out + deep_out
-        return out, fm_id_weight, fm_id_embs
+        out = cross_2 + deep_out
+        return out, fm_id_embs
 
 
 class NetWithLossClass(nn.Cell):
