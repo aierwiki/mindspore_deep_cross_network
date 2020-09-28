@@ -116,22 +116,23 @@ class CrossLayer(nn.Cell):
         self.input_dim = input_dim
         weight_init, bias_init = weight_bias_init
         self.weight = init_method(weight_init, [input_dim, 1], name="weight")
-        self.bias = init_method(bias_init, [input_dim, 1], name="bias")
-        self.ExpandDims = P.ExpandDims()
+        self.bias = init_method(bias_init, [input_dim], name="bias")
         self.Tile = P.Tile()
         self.Transpose = P.TransPose()
         self.Mul = P.Mul()
         self.ReduceSum = P.ReduceSum(keep_dims=False)
+        self.ExpandDims = P.ExpandDims()
+        self.Matmul = P.MatMul(transpose_b=False)
+        self.Reshape = P.Reshape()
 
     def construct(self, x0, x):
-        x0 = self.ExpandDims(x0, 2)
-        x = self.ExpandDims(x, 2)
-        x0_broad_horizon = self.Tile(x0, [1, 1, self.input_dim])
-        x_broad_vertical = self.Transpose(self.Tile(x, [1, 1, self.input_dim]), [0, 2, 1])
-        w_broad_horizon = self.Tile(self.weight, [1, self.input_dim])
-        mid_res = self.Mul(self.Mul(x0_broad_horizon, x_broad_vertical), w_broad_horizon)
-        res = self.ReduceSum(mid_res, axis=2)
-        res = res + self.Transpose(b)
+        xx0 = self.ExpandDims(x0, -1)
+        xx = self.ExpandDims(x, -1)
+        x0_broad_horizon = self.Tile(xx0, [1, 1, self.input_dim])
+        x_broad_vertical = self.Transpose(self.Tile(xx, [1, 1, self.input_dim]), [0, 2, 1])
+        mid_res = self.Matmul(self.Mul(x0_broad_horizon, x_broad_vertical), self.weight)
+        res = self.Reshape(mid_res, (-1, self.input_dim))
+        res = res + self.bias + x0
         return res        
         
 
@@ -244,7 +245,7 @@ class DeepFMModel(nn.Cell):
         self.Tile = P.Tile()
         self.Concat = P.Concat(axis=1)
         self.Cast = P.Cast()
-        
+
 
     def construct(self, id_hldr, wt_hldr):
         """
@@ -254,17 +255,18 @@ class DeepFMModel(nn.Cell):
         """
 
         mask = self.Reshape(wt_hldr, (self.batch_size, self.field_size, 1))
-        # Cross Layer
         fm_id_embs = self.Gatherv2(self.embedding_table, id_hldr, 0)
         vx = self.Mul(fm_id_embs, mask)
-        x0 = self.Reshape(vx, (-1, self.field_size * self.emb_dim))
-        cross_1 = self.cross_layer_1(x0, x0) + x0
-        cross_2 = self.cross_layer_2(x0, cross_1) + cross_1
+        # Cross Layer
+        cross_in = self.Reshape(vx, (-1, self.field_size * self.emb_dim))
+        cross_1 = self.cross_layer_1(cross_in, cross_in)
+        cross_2 = self.cross_layer_2(cross_in, cross_1)
 
         #  Deep layer
         b = self.Reshape(self.fm_b, (1, 1))
         b = self.Tile(b, (self.batch_size, 1))
-        deep_in = self.Concat((x0, b))
+        deep_in = self.Reshape(vx, (-1, self.field_size * self.emb_dim))
+        deep_in = self.Concat((deep_in, b))
         deep_in = self.dense_layer_1(deep_in)
         deep_in = self.dense_layer_2(deep_in)
         deep_in = self.dense_layer_3(deep_in)
